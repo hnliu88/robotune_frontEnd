@@ -1,0 +1,213 @@
+常见视频流方案：
+主要有HLS、RTMP和RTSP协议。为了更好地对比HLS、RTMP和RTSP这三种视频流传输协议，我们可以将它们的主要特性、优势及劣势整理成表格形式，并根据这些因素给出一个综合评分。评分标准为：实时性（1-5分）、兼容性（1-5分）、稳定性（1-5分）、易用性（1-5分），其中5分为最高。
+
+处理音视频的工具
+FFmpeg是一个开源的音频和视频处理工具，广泛用于录制、转换、编辑和流式传输音视频文件。
+数据来源是图片格式，需要一款工具处理图片。把图片处理成视频流的格式输出。
+
+实现demo
+搭建一个 RTMP 推流服务器
+使用 node-media-server 可以快速简单搭建一个 RTMP 推流服务。
+大部分配置按官方文档默认值配置即可。
+vim rtmpServer.mjs
+import NodeMediaServer from 'node-media-server';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const config = {
+  rtmp: {
+    bind: '0.0.0.0',
+    port: 1935,
+    chunk_size: 60000,
+    gop_cache: true,
+    ping: 60,
+    ping_timeout: 30,
+    hls: {
+      path: './media/hls',
+    },
+  },
+  http: {
+    bind: '0.0.0.0',
+    port: 8000,
+    mediaroot: '../media',
+    allow_origin: '*',
+  },
+  https: {
+    bind: '0.0.0.0',
+    port: 8443,
+    // 需要本地 openssl 生成证书指定，
+    // 默认的配置会报错，提示 TypeError: Cannot read properties of undefined (reading 'key')
+    // 替换为实际的路径
+    cert: path.resolve(__dirname, './server.cert'),
+    // 替换为实际的路径
+    key: path.resolve(__dirname, './server.key'),
+  },
+  trans: {
+    ffmpeg: path.resolve(path.normalize('D:/Apps/chocolatey/bin/ffmpeg')),
+    tasks: [
+      {
+        app: 'live',
+        hls: true,
+        hlsFlags: '[hls_time=2:hls_list_size=3:hls_flags=delete_segments]',
+        hlsKeep: false,
+      },
+    ],
+  },
+};
+
+const nms = new NodeMediaServer(config);
+
+nms.run();
+
+
+启动 RTMP 服务器
+$ node rtmpServer.js
+
+实现推流MVP（FFmpeg实现）
+1. 分两步：
+1.1 图片合成视频；
+1.2 视频推流
+2. 直接推送图片（验证方法1后，发现合成视频占用过多CPU资源，尝试探索）
+
+1.1 图片合成视频
+假设图片命名为 image1.jpg，image2.jpg，image3.jpg，是连续的数字序列，且它们在 images 目录下：
+$ ffmpeg -i images/image%d.jpg -r 20 -f flv output.mp4
+参数说明：
+-i 输入内容
+-r 帧率，20 表示 20帧/秒
+-f 输出格式，指定 flv 格式
+output.mp4 是输出文件
+测试结果：能正常输入图片合成的视频
+
+1.2 视频推流
+把合成的视频 output.mp4 推送到 RTMP 服务器。
+1.2.1 前置条件
+● 需要本地搭建一个推流服务器，因为我们是局域网环境使用。
+● 使用 node-media-server 搭建一个 RTMP 推流服务器。
+
+1.2.2 ffmpeg 视频推流
+$ ffmpeg -re -i output.mp4 -c copy -f flv 'rtmp://localhost:1935/live/test'
+开始推流
+
+
+检查推流结果
+
+从结果查看，视频流的推送和播放，是正常的
+nodejs实现中间层服务
+图片合成视频
+原理：依赖 ffmpeg 库，把多张图片合成视频。
+nodejs 可以使用 fluent-ffmpeg 库，fluent-ffmpeg 库对 ffmpeg 进行了一定的抽象封装处理，使用起来更方便。
+1. 使用 ffmpeg 合成视频，ffmpeg 推流视频，使用 rtmp 协议
+原始图片大小，与合成的视频大小比较
+
+
+由上图可以看出，合成视频的大小约比图片总大小少一半的大小。
+合成视频后是有助于减少传输数据，
+但是图片合成视频时，ffmpeg 占用非常高的CPU资源，能使CPU使用率从20%飙升到100%
+
+视频推送
+利用 ffmpeg 推送视频流
+vim ffmpegServer.mjs
+import { join, normalize, resolve } from 'path';
+import { spawn } from 'child_process';
+
+const rtmpUrl = 'rtmp://localhost:1935/live/test';
+const inputSource = resolve(normalize('C:/Users/qwcen/Pictures/output.mp4'));
+
+runFFmpeg(inputSource, rtmpUrl);
+边合成视频，边推流（探索是否可行，结论：可行）
+vim ffmpegServer.js
+import { spawn } from 'child_process';
+function startStreaming(filePath, rtmpUrl) {
+  const child = spawn(
+    `${ffmpegPath.path} -stream_loop -1 -re -i ${filePath} -c:v libx264 -preset ultrafast -r 10 -f flv ${rtmpUrl}`,
+    {
+      stdio: 'inherit',
+      shell: true,
+    },
+  );
+  child.on('exit', (code) => {
+    if (code !== 0) {
+      console.error(`FFmpeg process exited with code ${code}`);
+    } else {
+      console.log('FFmpeg process exited successfully');
+    }
+  });
+  child.on('error', (err) => {
+    console.error(`FFmpeg process error: ${err.message}`);
+  });
+}
+
+startStreaming('C:\\Users\\qwcen\\Pictures\\images\\image%d.png', 'rtmp://localhost:1935/live/test')
+完整代码：
+rtmp 推流服务器代码（看上面）
+中间层代码
+import { join, normalize, resolve } from 'path';
+import { spawn } from 'child_process';
+
+function startStreaming(filePath, rtmpUrl) {
+  const child = spawn(
+    `${ffmpegPath.path} -stream_loop -1 -re -i ${filePath} -c:v libx264 -preset ultrafast -r 10 -f flv ${rtmpUrl}`,
+    {
+      stdio: 'inherit',
+      shell: true,
+    },
+  );
+  child.on('exit', (code) => {
+    if (code !== 0) {
+      console.error(`FFmpeg process exited with code ${code}`);
+    } else {
+      console.log('FFmpeg process exited successfully');
+    }
+  });
+  child.on('error', (err) => {
+    console.error(`FFmpeg process error: ${err.message}`);
+  });
+}
+
+startStreaming('C:\\Users\\qwcen\\Pictures\\images\\image%d.png', 'rtmp://localhost:1935/live/test')
+h5端播放代码
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTMP Stream with flv.js</title>
+    <script src="https://cdn.jsdelivr.net/npm/flv.js/dist/flv.min.js"></script>
+</head>
+
+<body>
+    <h1>RTMP Stream Player</h1>
+    <video id="videoElement" controls width="640" height="360"></video>
+
+    <script>
+        window.onload = function() {
+            var videoElement = document.getElementById('videoElement')
+
+            // 判断浏览器是否支持 flv.js
+            if(flvjs.isSupported()) {
+                var flvPlayer = flvjs.createPlayer({
+                    type: 'flv',
+                    url: 'http://localhost:8000/live/test.flv',  // 替换为您的 RTMP 流地址
+                    debug: true,
+                    isLive: false,
+                    loop: false,
+                    autoplay: true,
+                    hasVideo: true,
+                    hasAudio: false,
+                })
+                flvPlayer.attachMediaElement(videoElement)
+                flvPlayer.load()
+                flvPlayer.play()
+            } else {
+                console.error('flv.js is not supported in this browser.')
+            }
+        }
+    </script>
+</body>
+
+</html>
