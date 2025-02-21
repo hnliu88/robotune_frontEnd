@@ -19,5 +19,17 @@
 图像和视频编辑：在图像编辑软件中，抗锯齿可以帮助平滑边缘，制作更高质量的图片。
 3D 渲染：在计算机图形和动画渲染中，抗锯齿是提高视觉质量的重要技术。
 
-实际使用：
+实际使用效果：
 
+代码：
+基础：PIXI.js
+PIXI.js 的抗锯齿是通过 MSAA (多重采样抗锯齿) 实现的，这是 WebGL 原生支持的抗锯齿方式。当创建 PIXI.Application 时，通过设置 antialias 参数来控制是否启用 MSAA。
+this.app = new new PIXI.Application();
+this.app
+.init({
+  background: "#f5f5f5",
+  antialias: this._antialias, // 抗锯齿
+  resizeTo: this.contentDom,
+  width: this.contentDom.offsetWidth,
+  height: this.contentDom.offsetHeight,
+})
